@@ -83,11 +83,7 @@ jobs:
         shell: bash
         run: |
           for attempt in {1..10}; do
-            RESPONSE="$(npx vercel@latest curl /api/health \
-              --deployment "$DEPLOYMENT_URL" \
-              --token "$VERCEL_TOKEN" \
-              --yes \
-              -- --fail || true)"
+            RESPONSE="$(npx vercel@latest curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
 
             if printf '%s' "$RESPONSE" | grep -q '"status":"ok"'; then
               echo "Production health check passed."
