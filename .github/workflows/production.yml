@@ -1,0 +1,87 @@
+name: Production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pull Vercel production configuration
+        run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build production deployment
+        run: npx vercel@latest build --prod --token="$VERCEL_TOKEN"
+
+      - name: Link Supabase project
+        run: npx supabase@latest link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Preview pending migrations
+        run: npx supabase@latest db push --dry-run --linked
+
+      - name: Apply pending migrations
+        run: npx supabase@latest db push --linked
+
+      - name: Deploy to Vercel production
+        shell: bash
+        run: |
+          DEPLOYMENT_URL="$(npx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
+          echo "Deployment URL: $DEPLOYMENT_URL"
+
+      - name: Production health check
+        shell: bash
+        run: |
+          for attempt in {1..10}; do
+            if curl --fail --silent --show-error "$DEPLOYMENT_URL/api/health" \
+              | grep -q '"status":"ok"'; then
+              echo "Production health check passed."
+              exit 0
+            fi
+
+            echo "Health check attempt $attempt failed; retrying..."
+            sleep 6
+          done
+
+          echo "Production health check failed."
+          exit 1
