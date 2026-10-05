@@ -56,17 +56,21 @@ jobs:
       - name: Link Supabase project
         run: npx supabase@latest link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
 
+      - name: Prepare Supabase database connection
+        shell: bash
+        run: |
+          ENCODED_PASSWORD="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SUPABASE_DB_PASSWORD))')"
+          SUPABASE_DB_URL="postgresql://postgres.${SUPABASE_PROJECT_REF}:${ENCODED_PASSWORD}@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+
+          echo "::add-mask::$ENCODED_PASSWORD"
+          echo "::add-mask::$SUPABASE_DB_URL"
+          echo "SUPABASE_DB_URL=$SUPABASE_DB_URL" >> "$GITHUB_ENV"
+
       - name: Preview pending migrations
-        run: >
-          npx supabase@latest db push --dry-run
-          --db-url "postgresql://postgres.$SUPABASE_PROJECT_REF@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
-          --password "$SUPABASE_DB_PASSWORD"
+        run: npx supabase@latest db push --dry-run --db-url "$SUPABASE_DB_URL"
 
       - name: Apply pending migrations
-        run: >
-          npx supabase@latest db push
-          --db-url "postgresql://postgres.$SUPABASE_PROJECT_REF@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
-          --password "$SUPABASE_DB_PASSWORD"
+        run: npx supabase@latest db push --db-url "$SUPABASE_DB_URL"
 
       - name: Deploy to Vercel production
         shell: bash
