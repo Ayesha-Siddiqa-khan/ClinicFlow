@@ -56,10 +56,10 @@ jobs:
         run: rm -rf .vercel
 
       - name: Pull Vercel production configuration
-        run: npx --yes vercel@54 pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: npx --yes vercel@62.4.0 pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build production deployment
-        run: npx --yes vercel@54 build --prod --token="$VERCEL_TOKEN"
+        run: npx --yes vercel@62.4.0 build --prod --token="$VERCEL_TOKEN"
 
       - name: Link Supabase project
         run: npx --yes supabase@2 link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
@@ -86,7 +86,7 @@ jobs:
       - name: Deploy prebuilt release to Vercel
         shell: bash
         run: |
-          DEPLOYMENT_URL="$(npx --yes vercel@54 deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          DEPLOYMENT_URL="$(npx --yes vercel@62.4.0 deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
           echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
           echo "Deployment URL: $DEPLOYMENT_URL"
 
@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           for attempt in {1..10}; do
-            RESPONSE="$(npx --yes vercel@54 curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
+            RESPONSE="$(npx --yes vercel@62.4.0 curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
 
             if printf '%s' "$RESPONSE" | grep -q '"status":"ok"'; then
               echo "Production health check passed on attempt $attempt."
