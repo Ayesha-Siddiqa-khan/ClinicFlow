@@ -1,0 +1,198 @@
+name: Gmail Alert Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_result:
+        description: "Choose Gmail alert to test"
+        required: true
+        type: choice
+        options:
+          - success
+          - failure
+
+permissions:
+  contents: read
+
+jobs:
+  test-alert:
+    name: Test Gmail Alert (${{ inputs.test_result }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Simulate successful deployment
+        if: ${{ inputs.test_result == 'success' }}
+        shell: bash
+        run: |
+          echo "Simulating successful deployment notification."
+          echo "This step is harmless and affects no production systems."
+
+      - name: Send Gmail success notification
+        if: ${{ success() && inputs.test_result == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GMAIL_USERNAME: ${{ vars.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_WORKFLOW_NAME: ${{ github.workflow }}
+          GITHUB_RUN_ID_VAL: ${{ github.run_id }}
+          GITHUB_SERVER: ${{ github.server_url }}
+          GITHUB_SHA_VAL: ${{ github.sha }}
+        run: |
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            RUN_URL="${GITHUB_SERVER}/${GITHUB_REPO}/actions/runs/${GITHUB_RUN_ID_VAL}"
+            echo "### Gmail Alert Test — SUCCESS" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Repository:** ${GITHUB_REPO}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Workflow:** ${GITHUB_WORKFLOW_NAME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Environment:** production" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Commit:** \`${GITHUB_SHA_VAL}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Run URL:** [View Actions Run](${RUN_URL})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Status:** Simulated success executed; Gmail notification dispatched." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          python3 - << 'EOF'
+          import datetime
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          username = os.environ.get("GMAIL_USERNAME", "").strip()
+          password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+          recipient = os.environ.get("ALERT_EMAIL_TO", "").strip()
+
+          repo = os.environ.get("GITHUB_REPO", "unknown")
+          workflow = os.environ.get("GITHUB_WORKFLOW_NAME", "unknown")
+          run_id = os.environ.get("GITHUB_RUN_ID_VAL", "")
+          server_url = os.environ.get("GITHUB_SERVER", "https://github.com")
+          commit_sha = os.environ.get("GITHUB_SHA_VAL", "unknown")
+          run_url = f"{server_url}/{repo}/actions/runs/{run_id}"
+
+          if not username or not password or not recipient:
+              print("Warning: Missing required Gmail configuration. GMAIL_USERNAME, GMAIL_APP_PASSWORD, or ALERT_EMAIL_TO not provided.")
+              exit(1)
+
+          msg = EmailMessage()
+          msg["Subject"] = f"[TEST SUCCESS] GitHub Actions - {repo}"
+          msg["From"] = username
+          msg["To"] = recipient
+
+          timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+          msg.set_content(
+              f"[TEST SUCCESS ALERT]\n\n"
+              f"This is a simulated success alert from GitHub Actions to verify Gmail notification delivery.\n"
+              f"No production deployments, infrastructure, or databases were affected.\n\n"
+              f"Repository:  {repo}\n"
+              f"Workflow:    {workflow}\n"
+              f"Environment: production\n"
+              f"Commit SHA:  {commit_sha}\n"
+              f"Run URL:     {run_url}\n\n"
+              f"Status:      Simulated success completed\n"
+              f"Timestamp:   {timestamp}\n"
+          )
+
+          try:
+              with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+                  server.starttls()
+                  server.login(username, password)
+                  server.send_message(msg)
+              print("Test success notification email sent successfully via Gmail SMTP.")
+          except smtplib.SMTPAuthenticationError:
+              print("Error: SMTP authentication failed. Please verify GMAIL_USERNAME and GMAIL_APP_PASSWORD.")
+              exit(1)
+          except Exception as exc:
+              print(f"Error sending email alert: {type(exc).__name__}: {exc}")
+              exit(1)
+          EOF
+
+      - name: Trigger intentional test failure
+        if: ${{ inputs.test_result == 'failure' }}
+        shell: bash
+        run: |
+          echo "Simulating controlled deployment failure."
+          echo "This failure is intentional and does not impact any production infrastructure or deployments."
+          exit 1
+
+      - name: Send Gmail failure notification
+        if: ${{ failure() && inputs.test_result == 'failure' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GMAIL_USERNAME: ${{ vars.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_WORKFLOW_NAME: ${{ github.workflow }}
+          GITHUB_RUN_ID_VAL: ${{ github.run_id }}
+          GITHUB_SERVER: ${{ github.server_url }}
+          GITHUB_SHA_VAL: ${{ github.sha }}
+        run: |
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            RUN_URL="${GITHUB_SERVER}/${GITHUB_REPO}/actions/runs/${GITHUB_RUN_ID_VAL}"
+            echo "### Gmail Alert Test — FAILURE" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Repository:** ${GITHUB_REPO}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Workflow:** ${GITHUB_WORKFLOW_NAME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Environment:** production" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Commit:** \`${GITHUB_SHA_VAL}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Run URL:** [View Actions Run](${RUN_URL})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Note:** Controlled failure test; no production systems affected." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          python3 - << 'EOF'
+          import datetime
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          username = os.environ.get("GMAIL_USERNAME", "").strip()
+          password = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
+          recipient = os.environ.get("ALERT_EMAIL_TO", "").strip()
+
+          repo = os.environ.get("GITHUB_REPO", "unknown")
+          workflow = os.environ.get("GITHUB_WORKFLOW_NAME", "unknown")
+          run_id = os.environ.get("GITHUB_RUN_ID_VAL", "")
+          server_url = os.environ.get("GITHUB_SERVER", "https://github.com")
+          commit_sha = os.environ.get("GITHUB_SHA_VAL", "unknown")
+          run_url = f"{server_url}/{repo}/actions/runs/{run_id}"
+
+          if not username or not password or not recipient:
+              print("Warning: Missing required Gmail configuration. GMAIL_USERNAME, GMAIL_APP_PASSWORD, or ALERT_EMAIL_TO not provided.")
+              exit(1)
+
+          msg = EmailMessage()
+          msg["Subject"] = f"[TEST FAILED] GitHub Actions - {repo}"
+          msg["From"] = username
+          msg["To"] = recipient
+
+          timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+          msg.set_content(
+              f"[TEST FAILURE ALERT]\n\n"
+              f"This is a simulated failure alert from GitHub Actions to verify Gmail notification delivery.\n"
+              f"No production deployments, infrastructure, or databases were affected.\n\n"
+              f"Repository:  {repo}\n"
+              f"Workflow:    {workflow}\n"
+              f"Environment: production\n"
+              f"Commit SHA:  {commit_sha}\n"
+              f"Run URL:     {run_url}\n\n"
+              f"Status:      Simulated failure triggered (exit 1)\n"
+              f"Timestamp:   {timestamp}\n"
+          )
+
+          try:
+              with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+                  server.starttls()
+                  server.login(username, password)
+                  server.send_message(msg)
+              print("Test failure notification email sent successfully via Gmail SMTP.")
+          except smtplib.SMTPAuthenticationError:
+              print("Error: SMTP authentication failed. Please verify GMAIL_USERNAME and GMAIL_APP_PASSWORD.")
+              exit(1)
+          except Exception as exc:
+              print(f"Error sending email alert: {type(exc).__name__}: {exc}")
+              exit(1)
+          EOF
