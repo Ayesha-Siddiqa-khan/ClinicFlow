@@ -33,6 +33,7 @@ jobs:
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       SUPABASE_DB_POOLER_HOST: ${{ vars.SUPABASE_DB_POOLER_HOST || 'aws-0-ap-south-1.pooler.supabase.com' }}
 
+      VERCEL_CLI_VERSION: "62.4.0"
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
@@ -56,10 +57,10 @@ jobs:
         run: rm -rf .vercel
 
       - name: Pull Vercel production configuration
-        run: npx --yes vercel@54 pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: npx --yes "vercel@$VERCEL_CLI_VERSION" pull --yes --environment=production
 
       - name: Build production deployment
-        run: npx --yes vercel@54 build --prod --token="$VERCEL_TOKEN"
+        run: npx --yes "vercel@$VERCEL_CLI_VERSION" build --prod
 
       - name: Link Supabase project
         run: npx --yes supabase@2 link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
@@ -86,7 +87,7 @@ jobs:
       - name: Deploy prebuilt release to Vercel
         shell: bash
         run: |
-          DEPLOYMENT_URL="$(npx --yes vercel@54 deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          DEPLOYMENT_URL="$(npx --yes "vercel@$VERCEL_CLI_VERSION" deploy --prebuilt --prod)"
           echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
           echo "Deployment URL: $DEPLOYMENT_URL"
 
@@ -94,7 +95,7 @@ jobs:
         shell: bash
         run: |
           for attempt in {1..10}; do
-            RESPONSE="$(npx --yes vercel@54 curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
+            RESPONSE="$(npx --yes "vercel@$VERCEL_CLI_VERSION" curl /api/health --deployment "$DEPLOYMENT_URL" || true)"
 
             if printf '%s' "$RESPONSE" | grep -q '"status":"ok"'; then
               echo "Production health check passed on attempt $attempt."
