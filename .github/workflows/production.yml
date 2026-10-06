@@ -52,6 +52,9 @@ jobs:
       - name: Install dependencies (lockfile)
         run: npm ci
 
+      - name: Reset local Vercel project metadata
+        run: rm -rf .vercel
+
       - name: Pull Vercel production configuration
         run: npx --yes vercel@54 pull --yes --environment=production --token="$VERCEL_TOKEN"
 
