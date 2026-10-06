@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,10 +15,13 @@ concurrency:
 
 jobs:
   deploy:
+    name: Production Deployment & Verification
     if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
 
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -27,6 +31,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SUPABASE_DB_POOLER_HOST: ${{ vars.SUPABASE_DB_POOLER_HOST || 'aws-0-ap-south-1.pooler.supabase.com' }}
 
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
@@ -36,63 +41,109 @@ jobs:
       - name: Checkout tested commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Setup Node
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
 
-      - name: Install dependencies
+      - name: Install dependencies (lockfile)
         run: npm ci
 
       - name: Pull Vercel production configuration
-        run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: npx --yes vercel@54 pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build production deployment
-        run: npx vercel@latest build --prod --token="$VERCEL_TOKEN"
+        run: npx --yes vercel@54 build --prod --token="$VERCEL_TOKEN"
 
       - name: Link Supabase project
-        run: npx supabase@latest link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+        run: npx --yes supabase@2 link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
 
       - name: Prepare Supabase database connection
         shell: bash
         run: |
           ENCODED_PASSWORD="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SUPABASE_DB_PASSWORD))')"
-          SUPABASE_DB_URL="postgresql://postgres.${SUPABASE_PROJECT_REF}:${ENCODED_PASSWORD}@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+          SUPABASE_DB_URL="postgresql://postgres.${SUPABASE_PROJECT_REF}:${ENCODED_PASSWORD}@${SUPABASE_DB_POOLER_HOST}:5432/postgres"
 
           echo "::add-mask::$ENCODED_PASSWORD"
           echo "::add-mask::$SUPABASE_DB_URL"
           echo "SUPABASE_DB_URL=$SUPABASE_DB_URL" >> "$GITHUB_ENV"
 
-      - name: Preview pending migrations
-        run: npx supabase@latest db push --dry-run --db-url "$SUPABASE_DB_URL"
+      - name: Verify database migration status
+        run: npx --yes supabase@2 migration list --db-url "$SUPABASE_DB_URL"
+
+      - name: Preview pending migrations (dry-run)
+        run: npx --yes supabase@2 db push --dry-run --db-url "$SUPABASE_DB_URL"
 
       - name: Apply pending migrations
-        run: npx supabase@latest db push --db-url "$SUPABASE_DB_URL"
+        run: npx --yes supabase@2 db push --db-url "$SUPABASE_DB_URL"
 
-      - name: Deploy to Vercel production
+      - name: Deploy prebuilt release to Vercel
         shell: bash
         run: |
-          DEPLOYMENT_URL="$(npx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          DEPLOYMENT_URL="$(npx --yes vercel@54 deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
           echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
           echo "Deployment URL: $DEPLOYMENT_URL"
 
-      - name: Production health check
+      - name: Verify production deployment health
         shell: bash
         run: |
           for attempt in {1..10}; do
-            RESPONSE="$(npx vercel@latest curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
+            RESPONSE="$(npx --yes vercel@54 curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
 
             if printf '%s' "$RESPONSE" | grep -q '"status":"ok"'; then
-              echo "Production health check passed."
+              echo "Production health check passed on attempt $attempt."
               exit 0
             fi
 
-            echo "Health check attempt $attempt failed; retrying..."
+            echo "Health check attempt $attempt failed; retrying in 6s..."
             sleep 6
           done
 
-          echo "Production health check failed."
+          echo "Production health check failed after 10 attempts."
           exit 1
+
+      - name: Notify deployment success
+        if: ${{ success() }}
+        shell: bash
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          TARGET_SHA="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "### Production Deployment Succeeded" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Repository:** ${{ github.repository }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`$TARGET_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment:** production" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Deployment URL:** $DEPLOYMENT_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Run URL:** [View Actions Run]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$ALERT_WEBHOOK_URL" ]; then
+            curl -s -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"Production deployment SUCCEEDED for ${{ github.repository }} (Commit: $TARGET_SHA)\nURL: $DEPLOYMENT_URL\nRun: $RUN_URL\"}" \
+              "$ALERT_WEBHOOK_URL" || true
+          fi
+
+      - name: Notify deployment failure
+        if: ${{ failure() }}
+        shell: bash
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          TARGET_SHA="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "### Production Deployment Failed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Repository:** ${{ github.repository }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`$TARGET_SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Environment:** production" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Run URL:** [View Actions Run]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$ALERT_WEBHOOK_URL" ]; then
+            curl -s -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"Production deployment FAILED for ${{ github.repository }} (Commit: $TARGET_SHA)\nRun: $RUN_URL\"}" \
+              "$ALERT_WEBHOOK_URL" || true
+          else
+            echo "No ALERT_WEBHOOK_URL secret configured; failure summary recorded in GitHub Actions step summary."
+          fi

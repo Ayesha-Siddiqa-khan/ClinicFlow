@@ -45,10 +45,32 @@ npm run build
 `.github/workflows/ci.yml` runs all four checks on every pull request and on
 pushes to `main`. It uses no repository secrets, so fork/PR runs stay safe.
 
-Protect `main` in GitHub → Settings → Branches: require a pull request, require
-the `CI / checks` status check, block direct pushes.
+Protect `main` in GitHub → Settings → Branches:
+- Require a pull request before merging (minimum 1 review).
+- Require status check `CI / Lint, Typecheck, Test & Build` to pass before merging.
+- Require branches to be up to date before merging.
+- Block force pushes and branch deletion.
 
-## Environments (Vercel)
+## Production CI/CD & Environments
+
+Production deployment is managed via `.github/workflows/production.yml` triggered automatically upon successful CI runs on `main` or manually via `workflow_dispatch` on `main`.
+
+### GitHub Secrets and Variables
+
+Configure under GitHub → Settings → Environments → `production`:
+
+| Name | Type | Purpose | Source |
+| --- | --- | --- | --- |
+| `VERCEL_TOKEN` | Secret | Authenticate Vercel CLI deployments & proxy curl | Vercel Account Settings → Tokens |
+| `SUPABASE_ACCESS_TOKEN` | Secret | Authenticate Supabase CLI operations | Supabase Account → Access Tokens |
+| `SUPABASE_DB_PASSWORD` | Secret | Direct pooler database password for migrations | Supabase Project Settings → Database |
+| `ALERT_WEBHOOK_URL` | Secret (Optional) | Post-deployment success & failure alerts | Slack / Teams / PagerDuty incoming webhook |
+| `VERCEL_ORG_ID` | Variable | Vercel Team / Account ID | `.vercel/project.json` or Project Settings |
+| `VERCEL_PROJECT_ID` | Variable | Vercel Project identifier | `.vercel/project.json` or Project Settings |
+| `SUPABASE_PROJECT_REF` | Variable | Supabase project identifier | Supabase Project Settings → General |
+| `SUPABASE_DB_POOLER_HOST` | Variable (Optional) | Custom Supabase pooler host (default: `aws-0-ap-south-1.pooler.supabase.com`) | Supabase Database Settings |
+
+### Environments (Vercel)
 
 | Environment | Supabase project | Notes |
 | --- | --- | --- |
@@ -56,7 +78,7 @@ the `CI / checks` status check, block direct pushes.
 | Production | production project | set vars in Vercel → Project → Settings → Environment Variables |
 
 Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` per
-environment. Never commit `.env.local`.
+environment in Vercel. Never commit `.env.local`.
 
 ## Post-deploy verification
 
@@ -67,8 +89,13 @@ curl --fail --silent --show-error https://<your-domain>/api/health
 
 Then sign in and create one test patient to confirm auth + RLS.
 
-## Rollback
+## Rollback Strategy
 
-Vercel → Project → Deployments → previous good deployment → "Promote to
-Production". Confirm `/api/health` afterwards, and check Supabase migrations
-before rolling back code that depends on a newer schema.
+### Application Rollback
+Vercel → Project → Deployments → select previous healthy deployment → "Promote to Production" (instant traffic shift).
+Confirm `/api/health` immediately afterwards.
+
+### Database Recovery
+- Migrations in production run validate (`migration list`) and dry-run (`db push --dry-run`) prior to applying changes.
+- Never run automatic destructive rollbacks (`db reset`) on production.
+- Always apply backward-compatible migrations (expand-and-contract). If a schema issue occurs, author and deploy a forward-fix migration.
