@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,10 +15,13 @@ concurrency:
 
 jobs:
   deploy:
+    name: Production Deployment & Verification
     if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
 
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -27,6 +31,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SUPABASE_DB_POOLER_HOST: ${{ vars.SUPABASE_DB_POOLER_HOST || 'aws-0-ap-south-1.pooler.supabase.com' }}
 
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
@@ -36,63 +41,174 @@ jobs:
       - name: Checkout tested commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Setup Node
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
 
-      - name: Install dependencies
+      - name: Install dependencies (lockfile)
         run: npm ci
 
       - name: Pull Vercel production configuration
-        run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: npx --yes vercel@54 pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build production deployment
-        run: npx vercel@latest build --prod --token="$VERCEL_TOKEN"
+        run: npx --yes vercel@54 build --prod --token="$VERCEL_TOKEN"
 
       - name: Link Supabase project
-        run: npx supabase@latest link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+        run: npx --yes supabase@2 link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
 
       - name: Prepare Supabase database connection
         shell: bash
         run: |
           ENCODED_PASSWORD="$(node -e 'process.stdout.write(encodeURIComponent(process.env.SUPABASE_DB_PASSWORD))')"
-          SUPABASE_DB_URL="postgresql://postgres.${SUPABASE_PROJECT_REF}:${ENCODED_PASSWORD}@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+          SUPABASE_DB_URL="postgresql://postgres.${SUPABASE_PROJECT_REF}:${ENCODED_PASSWORD}@${SUPABASE_DB_POOLER_HOST}:5432/postgres"
 
           echo "::add-mask::$ENCODED_PASSWORD"
           echo "::add-mask::$SUPABASE_DB_URL"
           echo "SUPABASE_DB_URL=$SUPABASE_DB_URL" >> "$GITHUB_ENV"
 
-      - name: Preview pending migrations
-        run: npx supabase@latest db push --dry-run --db-url "$SUPABASE_DB_URL"
+      - name: Verify database migration status
+        run: npx --yes supabase@2 migration list --db-url "$SUPABASE_DB_URL"
+
+      - name: Preview pending migrations (dry-run)
+        run: npx --yes supabase@2 db push --dry-run --db-url "$SUPABASE_DB_URL"
 
       - name: Apply pending migrations
-        run: npx supabase@latest db push --db-url "$SUPABASE_DB_URL"
+        run: npx --yes supabase@2 db push --db-url "$SUPABASE_DB_URL"
 
-      - name: Deploy to Vercel production
+      - name: Deploy prebuilt release to Vercel
         shell: bash
         run: |
-          DEPLOYMENT_URL="$(npx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          DEPLOYMENT_URL="$(npx --yes vercel@54 deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
           echo "DEPLOYMENT_URL=$DEPLOYMENT_URL" >> "$GITHUB_ENV"
           echo "Deployment URL: $DEPLOYMENT_URL"
 
-      - name: Production health check
+      - name: Verify production deployment health
         shell: bash
         run: |
           for attempt in {1..10}; do
-            RESPONSE="$(npx vercel@latest curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
+            RESPONSE="$(npx --yes vercel@54 curl "$DEPLOYMENT_URL/api/health" 2>/dev/null || true)"
 
             if printf '%s' "$RESPONSE" | grep -q '"status":"ok"'; then
-              echo "Production health check passed."
+              echo "Production health check passed on attempt $attempt."
               exit 0
             fi
 
-            echo "Health check attempt $attempt failed; retrying..."
+            echo "Health check attempt $attempt failed; retrying in 6s..."
             sleep 6
           done
 
-          echo "Production health check failed."
+          echo "Production health check failed after 10 attempts."
           exit 1
+
+      - name: Send Gmail success notification
+        if: ${{ success() }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GMAIL_USERNAME: ${{ vars.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          python3 - << 'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          sender = os.environ["GMAIL_USERNAME"]
+          password = os.environ["GMAIL_APP_PASSWORD"]
+          recipient = os.environ["ALERT_EMAIL_TO"]
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          workflow = os.environ["GITHUB_WORKFLOW"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          server_url = os.environ["GITHUB_SERVER_URL"]
+          sha = os.environ["TARGET_SHA"]
+
+          deployment_url = os.environ.get("DEPLOYMENT_URL", "Not available")
+          run_url = f"{server_url}/{repository}/actions/runs/{run_id}"
+
+          message = EmailMessage()
+          message["Subject"] = f"[PRODUCTION SUCCESS] {repository}"
+          message["From"] = sender
+          message["To"] = recipient
+
+          message.set_content(
+              "Production deployment completed successfully.\n\n"
+              f"Repository: {repository}\n"
+              "Environment: production\n"
+              f"Workflow: {workflow}\n"
+              f"Commit: {sha}\n"
+              f"Deployment URL: {deployment_url}\n\n"
+              "GitHub Actions Run:\n"
+              f"{run_url}\n\n"
+              "Status: Production deployment and verification completed successfully.\n"
+          )
+
+          with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+              smtp.ehlo()
+              smtp.starttls()
+              smtp.ehlo()
+              smtp.login(sender, password)
+              smtp.send_message(message)
+
+          print("Production success email sent.")
+          PY
+
+      - name: Send Gmail failure notification
+        if: ${{ failure() }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GMAIL_USERNAME: ${{ vars.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          python3 - << 'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          sender = os.environ["GMAIL_USERNAME"]
+          password = os.environ["GMAIL_APP_PASSWORD"]
+          recipient = os.environ["ALERT_EMAIL_TO"]
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          workflow = os.environ["GITHUB_WORKFLOW"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          server_url = os.environ["GITHUB_SERVER_URL"]
+          sha = os.environ["TARGET_SHA"]
+
+          run_url = f"{server_url}/{repository}/actions/runs/{run_id}"
+
+          message = EmailMessage()
+          message["Subject"] = f"[PRODUCTION FAILED] {repository}"
+          message["From"] = sender
+          message["To"] = recipient
+
+          message.set_content(
+              "Production deployment failed.\n\n"
+              f"Repository: {repository}\n"
+              "Environment: production\n"
+              f"Workflow: {workflow}\n"
+              f"Commit: {sha}\n\n"
+              "GitHub Actions Run:\n"
+              f"{run_url}\n\n"
+              "Status: Production deployment failed. Open the Actions run above and inspect the failed step.\n"
+          )
+
+          with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+              smtp.ehlo()
+              smtp.starttls()
+              smtp.ehlo()
+              smtp.login(sender, password)
+              smtp.send_message(message)
+
+          print("Production failure email sent.")
+          PY
