@@ -105,45 +105,110 @@ jobs:
           echo "Production health check failed after 10 attempts."
           exit 1
 
-      - name: Notify deployment success
+      - name: Send Gmail success notification
         if: ${{ success() }}
+        continue-on-error: true
         shell: bash
         env:
-          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          GMAIL_USERNAME: ${{ vars.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          TARGET_SHA="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "### Production Deployment Succeeded" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Repository:** ${{ github.repository }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Commit:** \`$TARGET_SHA\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Environment:** production" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Deployment URL:** $DEPLOYMENT_URL" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Run URL:** [View Actions Run]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
+          python3 - << 'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
 
-          if [ -n "$ALERT_WEBHOOK_URL" ]; then
-            curl -s -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"Production deployment SUCCEEDED for ${{ github.repository }} (Commit: $TARGET_SHA)\nURL: $DEPLOYMENT_URL\nRun: $RUN_URL\"}" \
-              "$ALERT_WEBHOOK_URL" || true
-          fi
+          sender = os.environ["GMAIL_USERNAME"]
+          password = os.environ["GMAIL_APP_PASSWORD"]
+          recipient = os.environ["ALERT_EMAIL_TO"]
 
-      - name: Notify deployment failure
+          repository = os.environ["GITHUB_REPOSITORY"]
+          workflow = os.environ["GITHUB_WORKFLOW"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          server_url = os.environ["GITHUB_SERVER_URL"]
+          sha = os.environ["TARGET_SHA"]
+
+          deployment_url = os.environ.get("DEPLOYMENT_URL", "Not available")
+          run_url = f"{server_url}/{repository}/actions/runs/{run_id}"
+
+          message = EmailMessage()
+          message["Subject"] = f"[PRODUCTION SUCCESS] {repository}"
+          message["From"] = sender
+          message["To"] = recipient
+
+          message.set_content(
+              "Production deployment completed successfully.\n\n"
+              f"Repository: {repository}\n"
+              "Environment: production\n"
+              f"Workflow: {workflow}\n"
+              f"Commit: {sha}\n"
+              f"Deployment URL: {deployment_url}\n\n"
+              "GitHub Actions Run:\n"
+              f"{run_url}\n\n"
+              "Status: Production deployment and verification completed successfully.\n"
+          )
+
+          with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+              smtp.ehlo()
+              smtp.starttls()
+              smtp.ehlo()
+              smtp.login(sender, password)
+              smtp.send_message(message)
+
+          print("Production success email sent.")
+          PY
+
+      - name: Send Gmail failure notification
         if: ${{ failure() }}
+        continue-on-error: true
         shell: bash
         env:
-          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          GMAIL_USERNAME: ${{ vars.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ vars.ALERT_EMAIL_TO }}
+          TARGET_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          TARGET_SHA="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "### Production Deployment Failed" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Repository:** ${{ github.repository }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Commit:** \`$TARGET_SHA\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Environment:** production" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Run URL:** [View Actions Run]($RUN_URL)" >> "$GITHUB_STEP_SUMMARY"
+          python3 - << 'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
 
-          if [ -n "$ALERT_WEBHOOK_URL" ]; then
-            curl -s -X POST -H 'Content-type: application/json' \
-              --data "{\"text\":\"Production deployment FAILED for ${{ github.repository }} (Commit: $TARGET_SHA)\nRun: $RUN_URL\"}" \
-              "$ALERT_WEBHOOK_URL" || true
-          else
-            echo "No ALERT_WEBHOOK_URL secret configured; failure summary recorded in GitHub Actions step summary."
-          fi
+          sender = os.environ["GMAIL_USERNAME"]
+          password = os.environ["GMAIL_APP_PASSWORD"]
+          recipient = os.environ["ALERT_EMAIL_TO"]
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          workflow = os.environ["GITHUB_WORKFLOW"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          server_url = os.environ["GITHUB_SERVER_URL"]
+          sha = os.environ["TARGET_SHA"]
+
+          run_url = f"{server_url}/{repository}/actions/runs/{run_id}"
+
+          message = EmailMessage()
+          message["Subject"] = f"[PRODUCTION FAILED] {repository}"
+          message["From"] = sender
+          message["To"] = recipient
+
+          message.set_content(
+              "Production deployment failed.\n\n"
+              f"Repository: {repository}\n"
+              "Environment: production\n"
+              f"Workflow: {workflow}\n"
+              f"Commit: {sha}\n\n"
+              "GitHub Actions Run:\n"
+              f"{run_url}\n\n"
+              "Status: Production deployment failed. Open the Actions run above and inspect the failed step.\n"
+          )
+
+          with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+              smtp.ehlo()
+              smtp.starttls()
+              smtp.ehlo()
+              smtp.login(sender, password)
+              smtp.send_message(message)
+
+          print("Production failure email sent.")
+          PY
