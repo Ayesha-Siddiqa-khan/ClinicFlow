@@ -99,3 +99,57 @@ Confirm `/api/health` immediately afterwards.
 - Migrations in production run validate (`migration list`) and dry-run (`db push --dry-run`) prior to applying changes.
 - Never run automatic destructive rollbacks (`db reset`) on production.
 - Always apply backward-compatible migrations (expand-and-contract). If a schema issue occurs, author and deploy a forward-fix migration.
+
+## Observability (Loki & Pyroscope)
+
+ClinicFlow integrates Grafana Loki for centralized log aggregation and Grafana Pyroscope for continuous application profiling.
+
+### 1. Start Observability Services (Docker Compose)
+
+Start the local Grafana, Loki, Pyroscope, and Promtail stack:
+
+```bash
+docker compose up -d
+# or using the explicit observability compose file:
+docker compose -f observability/docker-compose.observability.yml up -d
+```
+
+Service endpoints:
+- **Grafana UI**: `http://localhost:3001` (Pre-configured with Loki and Pyroscope datasources; anonymous admin access enabled)
+- **Pyroscope UI**: `http://localhost:4040` (Native continuous profiling dashboard)
+- **Loki Push API**: `http://localhost:3100/loki/api/v1/push`
+
+### 2. Configure Next.js Application
+
+Set the following in `.env.local` to enable Loki log pushing and Pyroscope profiling:
+
+```bash
+# Push application logs to local Loki
+LOKI_HOST=http://localhost:3100
+LOKI_APP_NAME=clinicflow
+LOG_LEVEL=info
+
+# Continuous profiling with Pyroscope
+PYROSCOPE_ENABLED=true
+PYROSCOPE_SERVER_ADDRESS=http://localhost:4040
+PYROSCOPE_APPLICATION_NAME=clinicflow
+```
+
+### 3. Verify Logs & Profiling
+
+1. Start the Next.js development server:
+   ```bash
+   npm run dev
+   ```
+2. Call the observability verification route:
+   ```bash
+   curl http://localhost:3000/api/observability/test
+   ```
+3. **Verify Loki Logs in Grafana**:
+   - Open `http://localhost:3001/explore`
+   - Select datasource **Loki**
+   - Query: `{app="clinicflow"}`
+4. **Verify Flamegraphs in Pyroscope / Grafana**:
+   - Open `http://localhost:4040` or Grafana Explore with **Pyroscope** datasource
+   - Select application `clinicflow` to inspect live CPU flamegraphs
+

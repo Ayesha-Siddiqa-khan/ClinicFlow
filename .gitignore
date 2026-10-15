@@ -43,3 +43,11 @@ supabase/.temp/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# logs
+logs/*.log
+
+# credentials & local scratch
+passward.txt
+
+

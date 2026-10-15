@@ -11,6 +11,7 @@
     "test": "node --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
+    "@pyroscope/nodejs": "^0.6.5",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.2",
     "@vercel/otel": "^2.1.3",
