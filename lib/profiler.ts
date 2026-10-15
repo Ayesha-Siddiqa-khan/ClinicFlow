@@ -10,7 +10,7 @@ class Profiler {
   private startedAt = 0;
 
   public async start() {
-    if (typeof window !== "undefined" || process.env.NEXT_RUNTIME !== "nodejs") return;
+    if (typeof window !== "undefined" || process.env.NEXT_RUNTIME === "edge") return;
     try {
       const { time } = await import("@datadog/pprof");
       if (this.isProfiling || time.isStarted()) return;
@@ -28,7 +28,7 @@ class Profiler {
   }
 
   public async stopAndUpload(): Promise<boolean> {
-    if (typeof window !== "undefined" || process.env.NEXT_RUNTIME !== "nodejs") return false;
+    if (typeof window !== "undefined" || process.env.NEXT_RUNTIME === "edge") return false;
 
     try {
       const { time, encode } = await import("@datadog/pprof");
@@ -69,7 +69,13 @@ class Profiler {
         body: new Uint8Array(buffer),
       });
 
-      return res.ok;
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[Profiler] Ingestion failed (${res.status} ${res.statusText}):`, errText);
+        return false;
+      }
+
+      return true;
     } catch (err) {
       console.warn("[Profiler] Upload skipped:", (err as Error)?.message || err);
       return false;

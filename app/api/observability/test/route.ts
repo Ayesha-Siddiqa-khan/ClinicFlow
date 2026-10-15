@@ -5,7 +5,7 @@ export async function GET() {
   const startTime = Date.now();
 
   // 1. Start CPU profiling
-  profiler.start();
+  await profiler.start();
 
   // 2. Emit test logs to Loki
   logger.info("Observability verification triggered", {
@@ -28,7 +28,7 @@ export async function GET() {
   const profileUploaded = await profiler.stopAndUpload();
 
   // 5. Restart profiler for continuous coverage
-  profiler.start();
+  await profiler.start();
 
   // 6. Flush logger to send immediately to Loki
   await logger.flush();
