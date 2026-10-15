@@ -28,11 +28,20 @@ class Logger {
   private flushTimeout: NodeJS.Timeout | null = null;
   private isFlushing = false;
   private nanoCounter = 0;
-  private lokiWarningEmitted = false;
+  private remoteWarningEmitted = false;
 
   private get lokiHost(): string | null {
     if (typeof window !== "undefined") return null;
     return process.env.LOKI_HOST || process.env.LOKI_URL || null;
+  }
+
+  private get otlpEndpoint(): string | null {
+    if (typeof window !== "undefined") return null;
+    return process.env.OTEL_EXPORTER_OTLP_ENDPOINT || null;
+  }
+
+  private get isRemoteLoggingConfigured(): boolean {
+    return Boolean(this.lokiHost || this.otlpEndpoint);
   }
 
   private get appName(): string {
@@ -95,8 +104,8 @@ class Logger {
         console.log(formattedConsole);
     }
 
-    // 2. Queue for Loki if configured and on server
-    if (this.lokiHost) {
+    // 2. Queue for remote logging (Loki or OTLP Gateway) if configured and on server
+    if (this.isRemoteLoggingConfigured) {
       this.nanoCounter = (this.nanoCounter + 1) % 10000;
       this.buffer.push({
         timestamp: Date.now(),
@@ -123,7 +132,7 @@ class Logger {
       this.flushTimeout = null;
     }
 
-    if (this.buffer.length === 0 || this.isFlushing || !this.lokiHost) {
+    if (this.buffer.length === 0 || this.isFlushing || !this.isRemoteLoggingConfigured) {
       return;
     }
 
@@ -132,14 +141,18 @@ class Logger {
     this.buffer = [];
 
     try {
-      await this.sendToLoki(batch);
-      this.lokiWarningEmitted = false;
-    } catch (err) {
-      if (!this.lokiWarningEmitted) {
-        console.warn("[Logger] Unable to push logs to Loki (is Loki running?):", (err as Error)?.message || err);
-        this.lokiWarningEmitted = true;
+      if (this.lokiHost) {
+        await this.sendToLoki(batch);
+      } else if (this.otlpEndpoint) {
+        await this.sendToOtlp(batch);
       }
-      // Drop dropped batch to prevent memory leak if Loki is offline indefinitely
+      this.remoteWarningEmitted = false;
+    } catch (err) {
+      if (!this.remoteWarningEmitted) {
+        console.warn("[Logger] Unable to push logs to remote endpoint:", (err as Error)?.message || err);
+        this.remoteWarningEmitted = true;
+      }
+      // Drop batch to prevent memory leak if remote is offline
     } finally {
       this.isFlushing = false;
     }
@@ -152,7 +165,7 @@ class Logger {
     const endpoint = host.endsWith("/") ? `${host}loki/api/v1/push` : `${host}/loki/api/v1/push`;
     const environment = process.env.NODE_ENV || "development";
 
-    // Group entries by level so each stream has a clean label
+    // Group entries by level so each stream has clean labels
     const streamsMap = new Map<LogLevel, Array<[string, string]>>();
 
     for (const entry of entries) {
@@ -209,6 +222,97 @@ class Logger {
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         throw new Error(`Loki returned ${res.status}: ${text}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async sendToOtlp(entries: LogEntry[]): Promise<void> {
+    const baseEndpoint = this.otlpEndpoint;
+    if (!baseEndpoint) return;
+
+    const endpoint = baseEndpoint.replace(/\/+$/, "") + "/v1/logs";
+    const environment = process.env.NODE_ENV || "development";
+
+    const logRecords = entries.map((entry) => {
+      const timeUnixNano = (BigInt(entry.timestamp) * BigInt(1000000) + BigInt(entry.nanoOffset)).toString();
+      const attributes: Array<{ key: string; value: { stringValue: string } }> = [
+        { key: "service.name", value: { stringValue: this.appName } },
+        { key: "service_name", value: { stringValue: this.appName } },
+        { key: "job", value: { stringValue: this.appName } },
+        { key: "app", value: { stringValue: this.appName } },
+        { key: "level", value: { stringValue: entry.level } },
+        { key: "environment", value: { stringValue: environment } },
+      ];
+
+      if (entry.meta) {
+        for (const [k, v] of Object.entries(entry.meta)) {
+          if (v !== undefined && v !== null) {
+            attributes.push({
+              key: k,
+              value: { stringValue: typeof v === "object" ? JSON.stringify(v) : String(v) },
+            });
+          }
+        }
+      }
+
+      return {
+        timeUnixNano,
+        severityText: entry.level.toUpperCase(),
+        body: { stringValue: entry.message },
+        attributes,
+      };
+    });
+
+    const body = {
+      resourceLogs: [
+        {
+          resource: {
+            attributes: [
+              { key: "service.name", value: { stringValue: this.appName } },
+              { key: "job", value: { stringValue: this.appName } },
+              { key: "app", value: { stringValue: this.appName } },
+            ],
+          },
+          scopeLogs: [
+            {
+              scope: { name: this.appName },
+              logRecords,
+            },
+          ],
+        },
+      ],
+    };
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (process.env.OTEL_EXPORTER_OTLP_HEADERS) {
+      const pairs = process.env.OTEL_EXPORTER_OTLP_HEADERS.split(",");
+      for (const pair of pairs) {
+        const [rawK, ...rest] = pair.split("=");
+        if (rawK && rest.length > 0) {
+          headers[rawK.trim()] = rest.join("=").trim();
+        }
+      }
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`OTLP Gateway returned ${res.status}: ${text}`);
       }
     } finally {
       clearTimeout(timeout);
