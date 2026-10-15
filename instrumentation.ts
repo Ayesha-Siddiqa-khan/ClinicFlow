@@ -1,5 +1,6 @@
 import { registerOTel } from '@vercel/otel';
 import { logger } from './lib/logger';
+import { profiler } from './lib/profiler';
 
 export async function register() {
   registerOTel({
@@ -7,38 +8,7 @@ export async function register() {
   });
 
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const isPyroscopeEnabled =
-      process.env.PYROSCOPE_ENABLED === 'true' ||
-      Boolean(process.env.PYROSCOPE_SERVER_ADDRESS);
-
-    if (isPyroscopeEnabled) {
-      try {
-        const Pyroscope = await import('@pyroscope/nodejs');
-        const serverAddress = process.env.PYROSCOPE_SERVER_ADDRESS || 'http://localhost:4040';
-        const appName = process.env.PYROSCOPE_APPLICATION_NAME || 'clinic-flow';
-
-        Pyroscope.init({
-          serverAddress,
-          appName,
-          flushIntervalMs: Number(process.env.PYROSCOPE_FLUSH_INTERVAL_MS || 5000),
-          wall: {
-            collectCpuTime: true,
-          },
-          basicAuthUser: process.env.PYROSCOPE_BASIC_AUTH_USER,
-          basicAuthPassword: process.env.PYROSCOPE_BASIC_AUTH_PASSWORD,
-          authToken: process.env.PYROSCOPE_AUTH_TOKEN,
-        });
-
-        Pyroscope.start();
-        logger.info('Pyroscope continuous profiling initialized', {
-          serverAddress,
-          appName,
-        });
-      } catch (error) {
-        logger.warn('Pyroscope continuous profiling failed to initialize', {
-          error: (error as Error)?.message || String(error),
-        });
-      }
-    }
+    profiler.start();
+    logger.info('Observability instrumentation initialized for ClinicFlow');
   }
 }
