@@ -1,6 +1,22 @@
 import { logger } from "@/lib/logger";
 import { profiler } from "@/lib/profiler";
 
+function computeIntensiveTask(iterations: number): number {
+  let acc = 0;
+  for (let i = 0; i < iterations; i++) {
+    acc += Math.sqrt(i * 1.5);
+  }
+  return acc;
+}
+
+function processClinicWorkload(): number {
+  let total = 0;
+  for (let batch = 0; batch < 5; batch++) {
+    total += computeIntensiveTask(2_000_000);
+  }
+  return total;
+}
+
 export async function GET() {
   const startTime = Date.now();
 
@@ -18,11 +34,8 @@ export async function GET() {
     threshold: 80,
   });
 
-  // 3. Perform a CPU workload to generate profiling samples
-  let sum = 0;
-  for (let i = 0; i < 5_000_000; i++) {
-    sum += Math.sqrt(i);
-  }
+  // 3. Perform named CPU workload so functions show in Flame Graph
+  const sum = processClinicWorkload();
 
   // 4. Stop and upload CPU profile to Pyroscope
   const profileUploaded = await profiler.stopAndUpload();
