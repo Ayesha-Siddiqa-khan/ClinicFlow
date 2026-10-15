@@ -1,10 +1,13 @@
 import { logger } from "@/lib/logger";
-import { withProfileLabels } from "@/lib/profiler";
+import { profiler } from "@/lib/profiler";
 
 export async function GET() {
   const startTime = Date.now();
 
-  // 1. Emit test logs to Loki
+  // 1. Start CPU profiling
+  await profiler.start();
+
+  // 2. Emit test logs to Loki
   logger.info("Observability verification triggered", {
     route: "/api/observability/test",
     timestamp: new Date().toISOString(),
@@ -15,16 +18,19 @@ export async function GET() {
     threshold: 80,
   });
 
-  // 2. Perform a small CPU calculation with Pyroscope label
-  const computeResult = await withProfileLabels({ test: "observability-bench" }, () => {
-    let sum = 0;
-    for (let i = 0; i < 200_000; i++) {
-      sum += Math.sqrt(i);
-    }
-    return sum;
-  });
+  // 3. Perform a CPU workload to generate profiling samples
+  let sum = 0;
+  for (let i = 0; i < 5_000_000; i++) {
+    sum += Math.sqrt(i);
+  }
 
-  // 3. Flush logger to send immediately to Loki
+  // 4. Stop and upload CPU profile to Pyroscope
+  const profileUploaded = await profiler.stopAndUpload();
+
+  // 5. Restart profiler for continuous coverage
+  await profiler.start();
+
+  // 6. Flush logger to send immediately to Loki
   await logger.flush();
 
   const durationMs = Date.now() - startTime;
@@ -33,14 +39,11 @@ export async function GET() {
     status: "ok",
     message: "Observability test completed",
     durationMs,
-    computeResult: Math.round(computeResult),
-    loki: {
-      host: process.env.LOKI_HOST || "not configured (console only)",
-      appName: process.env.OTEL_SERVICE_NAME || process.env.LOKI_APP_NAME || "clinic-flow",
-    },
+    computeResult: Math.round(sum),
     pyroscope: {
-      enabled: process.env.PYROSCOPE_ENABLED === "true" || Boolean(process.env.PYROSCOPE_SERVER_ADDRESS),
-      serverAddress: process.env.PYROSCOPE_SERVER_ADDRESS || "http://localhost:4040",
+      enabled: true,
+      profileUploaded,
+      serverAddress: process.env.PYROSCOPE_SERVER_ADDRESS || "https://profiles-prod-018.grafana.net",
       appName: process.env.PYROSCOPE_APPLICATION_NAME || "clinic-flow",
     },
   });

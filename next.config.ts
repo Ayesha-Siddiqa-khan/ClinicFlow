@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: ["@datadog/pprof", "@pyroscope/nodejs"],
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/@datadog/pprof/**/*"],
+  },
 };
 
 export default nextConfig;
+
