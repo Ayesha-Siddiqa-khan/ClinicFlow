@@ -20,11 +20,13 @@ export async function register() {
         Pyroscope.init({
           serverAddress,
           appName,
+          flushIntervalMs: Number(process.env.PYROSCOPE_FLUSH_INTERVAL_MS || 5000),
           wall: {
             collectCpuTime: true,
           },
           basicAuthUser: process.env.PYROSCOPE_BASIC_AUTH_USER,
           basicAuthPassword: process.env.PYROSCOPE_BASIC_AUTH_PASSWORD,
+          authToken: process.env.PYROSCOPE_AUTH_TOKEN,
         });
 
         Pyroscope.start();
