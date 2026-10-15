@@ -11,6 +11,7 @@
     "test": "node --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
+    "@pyroscope/nodejs": "^0.6.5",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.2",
     "@vercel/otel": "^2.1.3",
@@ -19,6 +20,8 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@emnapi/core": "^1.11.3",
+    "@emnapi/runtime": "^1.11.3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
